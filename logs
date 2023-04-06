@@ -1,0 +1,3 @@
+fixed df.ix[] deprecated
+flatten the Xi output of table_rainfall_maxima(). It was a column vector before
+declu implemented in slide over
