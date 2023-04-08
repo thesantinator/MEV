@@ -22,7 +22,8 @@ import matplotlib.pyplot as plt
 import mevpy.gev_fun as gev
 import mevpy.wei_fun as wei
 from scipy.special import gamma
-from scipy.stats import exponweib, pearsonr
+from scipy.stats import exponweib
+import statsmodels.api as sm
 
 
 ###############################################################################
@@ -129,9 +130,7 @@ def mev_fit(df, ws = 1, how = 'pwm', threshold = 0, potmode = True, declu = Fals
     if declu:
         # decluster time series, and subs. it in the original data frame.
         # (dome together for the entire time series)
-        sam = np.array(df.PRCP)
-        new_sam = decluster(sam)[0]
-        df.PRCP = new_sam
+        df = decluster(df)
 
     years   = np.unique(df.YEAR)
     nyears  = np.size(years)
@@ -213,9 +212,7 @@ def mev_CI(df, Fi_val, x0, ws = 1, ntimes = 1000, MEV_how = 'pwm',
     if declu:
         # decluster time series, and subs. it in the original data frame.
         # (dome together for the entire time series)
-        sam = np.array(df.PRCP)
-        new_sam = decluster(sam)[0]
-        df.PRCP = new_sam
+        df = decluster(df)
 
     Fi_val       = np.asarray(Fi_val)
     is_scalar   = False if Fi_val.ndim > 0 else True
@@ -394,10 +391,36 @@ def mev_boot_yearly(df):
 ###############################################################################  
 
 
-def decluster(sample, noise_lag = 10, noise_prob = 0.9, max_lag = 30):
+def decluster(df, noise_lag = 10, noise_prob = 0.9, max_lag = 30):
     '''------------------------------------------------------------
-    Decluster a rainfall time series. Eliminate the non-zero value within a correlation window
-    Once correlation time scale is compute, running windows with its size are selected.
+    Decluster rainfall time series on a YEARLY BASIS. Eliminate the non-zero value within a correlation window
+    Once correlation time scale is computed, running windows with its size are selected.
+    within each of them, I only keep the largest event observed.
+    :param sample: the time series to be declustered.
+    :param noise_lag: minimum lag at which I consider the ACF to be noise (defult = 10)
+    :param noise_prob: assume as noise correlation the 75% percentile of values beyond noise_lag
+    :param max_lag: max lag used to compute the noise level (default = 30)
+    :return:
+    -> dec_df  -> a new declustered dataframe
+
+    Note that ACF is meaningless in case long series of 0 in the TS. Care should be taken in such cases.
+    --------------------------------------------------------------'''
+    df['DATE'] = pd.to_datetime(df['DATE'], format='%Y%m%d') # Decode str to datetime64 for easy manipulation
+    dec_df = df.copy()
+    for year in range(df['DATE'].iloc[0].year, df['DATE'].iloc[-1].year + 1):
+        sample = dec_df.loc[dec_df['DATE'].dt.year==year, 'PRCP'].values
+        if sample.any(): # Check if sample is not empty
+            dec_df.loc[dec_df['DATE'].dt.year==year, 'PRCP'] = yearly_decluster(sample, noise_lag, noise_prob, max_lag)[0]
+
+    # Reencode to str (To stay consistent with the module mevpy)        
+    df['DATE'] = df['DATE'].dt.strftime('%Y%m%d')
+    dec_df['DATE'] = dec_df['DATE'].dt.strftime('%Y%m%d') 
+    return dec_df
+
+def yearly_decluster(sample, noise_lag = 10, noise_prob = 0.9, max_lag = 30):
+    '''------------------------------------------------------------
+    Decluster YEARLY rainfall time series. Eliminate the non-zero value within a correlation window
+    Once correlation time scale is computed, running windows with its size are selected.
     within each of them, I only keep the largest event observed.
     :param sample: the time series to be declustered.
     :param noise_lag: minimum lag at which I consider the ACF to be noise (defult = 10)
@@ -406,37 +429,41 @@ def decluster(sample, noise_lag = 10, noise_prob = 0.9, max_lag = 30):
     :return:
     -> dec_sample -> declustered time series
     -> dec_lag    -> running lag window size in which I only keep the maximum
+
+    Note that ACF is meaningless in case long series of 0 in the TS. Care should be taken in such cases.
     --------------------------------------------------------------'''
     det_sample = sample.copy()
-    # noise_lag = 6 # number of days after which I assume the time series to be perfectly scorrelated
-    # noise_prob = 0.75 # quantile of correlation that we assume to represent noise
-    lags = np.arange(max_lag) # 20 - days
-    nlags = np.size(lags)
-    time_corr = np.zeros(nlags)
-    n = np.size(sample)
-    for iil in lags:
-        mylag = lags[iil]
-        xt = sample[:n-mylag]
-        xtpt = sample[mylag:n]
-        time_corr[iil] = pearsonr(xt, xtpt)[0]
+    time_corr = sm.tsa.acf(sample, nlags=max_lag)
+
+    # ACF is assumed to be noise for k >= noise_lag 
     noise = time_corr[noise_lag:]
-    sorted_noise = np.sort(noise) # ascend by default
+    sorted_noise = np.sort(noise)
     num_noise = np.size(noise)
-    fi = np.arange(num_noise+1)/(num_noise+1) # non exceedance
-    mypos = np.argmin( np.abs(fi-noise_prob))
+    Fi = np.arange(num_noise+1)/(num_noise+1) # non exceedance
+    mypos = np.argmin( np.abs(Fi-noise_prob))
     noise_level = sorted_noise[mypos]
+
     # first crossing of noise level
     racf = time_corr - noise_level
     # now find its first zero crossing
     zero_crossings = np.where(np.diff(np.sign(racf)))[0]
-    dec_par = zero_crossings[0]
-    # mylags = np.arange(1, dec_par + 1)
-    for iis in range(n-dec_par):
+
+    # Correlation window size
+    dec_par = zero_crossings[0] 
+    
+    # roll the sample array with a lookback window of dec_par+1
+    s_rolled = np.lib.stride_tricks.sliding_window_view(sample, dec_par + 1)
+    out = np.zeros(s_rolled.shape)
+    out[np.arange(len(s_rolled)), np.argmax(s_rolled, axis=1)] = 1
+
+    # Selecting only maximum of rolling window
+    for iis in range(np.size(sample)-dec_par):
         window = sample[iis:iis+dec_par+1]
         loc_max = np.max(window)
         for iie in range(np.size(window)):
             if window[iie] < loc_max:
                 det_sample[iis + iie] = 0
+        
     return det_sample, dec_par
 
 
@@ -513,9 +540,7 @@ def table_rainfall_maxima(df, how = 'pwm', thresh = 0, potmode = True, declu = F
     if declu:
         # decluster time series, and subs. it in the original data frame.
         # (dome together for the entire time series)
-        sam = np.array(df.PRCP)
-        new_sam = decluster(sam)[0]
-        df.PRCP = new_sam
+        df = decluster(df)
 
     years_all  = df['YEAR']
     years      = pd.Series.unique(years_all)
@@ -559,9 +584,7 @@ def fit_EV_models(df, tr_min = 5, ws = 1, GEV_how = 'lmom', MEV_how = 'pwm',
     if declu:
         # decluster time series, and subs. it in the original data frame.
         # (dome together for the entire time series)
-        sam = np.array(df.PRCP)
-        new_sam = decluster(sam)[0]
-        df.PRCP = new_sam
+        df = decluster(df)
 
     XI,Fi,TR     = tab_rain_max(df)
     tr_mask      = TR > tr_min
@@ -571,13 +594,6 @@ def fit_EV_models(df, tr_min = 5, ws = 1, GEV_how = 'lmom', MEV_how = 'pwm',
 
     #x0           = np.mean(XI_val) - 0.2*np.std(XI_val)
     x0 = 50.0
-
-    if declu:
-        # decluster time series, and subs. it in the original data frame.
-        # (dome together for the entire time series)
-        sam = np.array(df.PRCP)
-        new_sam = decluster(sam)[0]
-        df.PRCP = new_sam
 
     # fit distributions
     csi, psi, mu    = gev.gev_fit(XI, how = GEV_how)
@@ -752,9 +768,7 @@ def cross_validation(df, ngen, ncal, nval, tr_min = 5, ws=[1],
     if declu:
         # decluster time series, and subs. it in the original data frame.
         # (dome together for the entire time series)
-        sam = np.array(df.PRCP)
-        new_sam = decluster(sam)[0]
-        df.PRCP = new_sam
+        df = decluster(df)
 
     years   = np.unique(df.YEAR)
     nyears  = np.size(years)
@@ -907,9 +921,7 @@ def slideover(df, winsize = 30, Tr = 100, display = True, ci = True, ntimes = 10
 
     df_ = df.copy() # Create a deep copy of the df for the MEV only in case of declu
     if declu:
-        sam = np.array(df_.PRCP)
-        new_sam = decluster(sam)[0]
-        df_.PRCP = new_sam
+        df_ = decluster(df_)
 
     for ii in range(nwin):
         print('slideover _ window = ', ii, 'of', nwin)        

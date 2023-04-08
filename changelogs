@@ -1,0 +1,4 @@
+- replaced df.ix[] that is deprecated
+- latten the Xi output of table_rainfall_maxima(). It was a column vector before
+- declu implemented in slide over
+- updated declu to be applied on a yearly basis instead of the whole timeseries
