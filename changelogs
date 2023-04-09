@@ -2,3 +2,4 @@
 - latten the Xi output of table_rainfall_maxima(). It was a column vector before
 - declu implemented in slide over
 - updated declu to be applied on a yearly basis instead of the whole timeseries
+- Fixed the weibull plotting position in decluster function from np.arange(num_noise+1)/(num_noise+1) to (np.arange(num_noise)+1)/(num_noise+1) 

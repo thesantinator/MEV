@@ -439,7 +439,7 @@ def yearly_decluster(sample, noise_lag = 10, noise_prob = 0.9, max_lag = 30):
     noise = time_corr[noise_lag:]
     sorted_noise = np.sort(noise)
     num_noise = np.size(noise)
-    Fi = np.arange(num_noise+1)/(num_noise+1) # non exceedance
+    Fi = (np.arange(num_noise)+1)/(num_noise+1) # non exceedance
     mypos = np.argmin( np.abs(Fi-noise_prob))
     noise_level = sorted_noise[mypos]
 
